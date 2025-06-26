@@ -1,0 +1,141 @@
+name: Medical Platform Scheduled Tasks
+
+on:
+  schedule:
+    # هر 15 دقیقه - برای یادآوری نوبت‌ها
+    - cron: '*/15 * * * *'
+    # روزانه ساعت 2:30 صبح UTC - برای cleanup
+    - cron: '30 2 * * *'
+    # هفتگی یکشنبه ساعت 1 صبح - برای گزارش‌ها
+    - cron: '0 1 * * 0'
+  
+  # امکان اجرای دستی
+  workflow_dispatch:
+    inputs:
+      task_type:
+        description: 'Type of task to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - reminders
+          - cleanup
+          - reports
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+  SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+jobs:
+  appointment-reminders:
+    name: Send Appointment Reminders
+    runs-on: ubuntu-latest
+    if: contains(github.event.schedule, '*/15') || github.event.inputs.task_type == 'reminders' || github.event.inputs.task_type == 'all'
+    
+    steps:
+      - name: Send 24h Reminders
+        run: |
+          echo "Sending 24-hour appointment reminders..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -d '{"action": "send_24h_reminders"}' \
+            "$SUPABASE_URL/rest/v1/rpc/process_appointment_reminders"
+
+      - name: Send 2h Reminders  
+        run: |
+          echo "Sending 2-hour appointment reminders..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -d '{"action": "send_2h_reminders"}' \
+            "$SUPABASE_URL/rest/v1/rpc/process_appointment_reminders"
+
+  database-cleanup:
+    name: Database Cleanup
+    runs-on: ubuntu-latest
+    if: contains(github.event.schedule, '30 2') || github.event.inputs.task_type == 'cleanup' || github.event.inputs.task_type == 'all'
+    
+    steps:
+      - name: Clean Expired Sessions
+        run: |
+          echo "Cleaning expired sessions..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            "$SUPABASE_URL/rest/v1/rpc/cleanup_expired_sessions"
+
+      - name: Archive Old Logs
+        run: |
+          echo "Archiving old audit logs..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -d '{"days_old": 90}' \
+            "$SUPABASE_URL/rest/v1/rpc/archive_old_logs"
+
+      - name: Update Analytics
+        run: |
+          echo "Updating daily analytics..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            "$SUPABASE_URL/rest/v1/rpc/update_daily_analytics"
+
+  commission-calculation:
+    name: Calculate Commissions
+    runs-on: ubuntu-latest
+    if: contains(github.event.schedule, '0 1 * * 0') || github.event.inputs.task_type == 'reports' || github.event.inputs.task_type == 'all'
+    
+    steps:
+      - name: Calculate Weekly Commissions
+        run: |
+          echo "Calculating weekly commissions..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            "$SUPABASE_URL/rest/v1/rpc/calculate_weekly_commissions"
+
+      - name: Generate Reports
+        run: |
+          echo "Generating weekly reports..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            "$SUPABASE_URL/rest/v1/rpc/generate_weekly_reports"
+
+  health-check:
+    name: System Health Check
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Check Database Health
+        run: |
+          echo "Checking database health..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            "$SUPABASE_URL/rest/v1/tenant_service.tenants?select=count")
+          
+          if [ $response -eq 200 ]; then
+            echo "✅ Database is healthy"
+          else
+            echo "❌ Database health check failed: $response"
+            exit 1
+          fi
+
+      - name: Send Status Notification
+        if: failure()
+        run: |
+          echo "🚨 Scheduled task failed - sending notification..."
+          # اینجا می‌تونید webhook برای Slack/Discord/Telegram اضافه کنید
